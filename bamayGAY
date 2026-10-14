@@ -1,0 +1,930 @@
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local CoreGui = game:GetService("CoreGui")
+local UserInputService = game:GetService("UserInputService")
+
+local LP = Players.LocalPlayer
+local GREEN = Color3.fromRGB(57, 255, 20)
+local RED = Color3.fromRGB(255, 70, 70)
+local WHITE = Color3.fromRGB(255, 255, 255)
+local DARK = Color3.fromRGB(15, 15, 20)
+
+local GUI_NAME = "MobileESP_Type1"
+local RENDER_NAME = "MobileESP_Type1_Render"
+
+local enabled = true
+local infoEnabled = true
+local rayXEnabled = false
+local spectateEnabled = false
+local spectateTarget = nil
+
+local espObjects = {}
+local connections = {}
+local buttonStates = {}
+local selectedPlayers = {}
+local rayOriginal = {}
+local activeDrag = nil
+local lockedCharacter = nil
+local lockedState = nil
+
+pcall(function()
+    RunService:UnbindFromRenderStep(RENDER_NAME)
+    local old = CoreGui:FindFirstChild(GUI_NAME)
+    if old then old:Destroy() end
+end)
+
+local gui = Instance.new("ScreenGui")
+gui.Name = GUI_NAME
+gui.ResetOnSpawn = false
+gui.IgnoreGuiInset = true
+gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+
+local ok = pcall(function()
+    gui.Parent = CoreGui
+end)
+
+if not ok or not gui.Parent then
+    gui.Parent = LP:WaitForChild("PlayerGui")
+end
+
+local function track(connection)
+    table.insert(connections, connection)
+    return connection
+end
+
+local function setButtonState(button, text, isOn)
+    button.Text = text
+    button.TextColor3 = isOn and GREEN or RED
+    button.BorderColor3 = isOn and GREEN or RED
+end
+
+local function makeButton(name, text, position)
+    local button = Instance.new("TextButton")
+    button.Name = name
+    button.Size = UDim2.fromOffset(100, 34)
+    button.Position = position
+    button.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
+    button.BackgroundTransparency = 0.15
+    button.BorderColor3 = GREEN
+    button.BorderSizePixel = 1
+    button.TextColor3 = GREEN
+    button.TextSize = 12
+    button.Font = Enum.Font.GothamBold
+    button.Text = text
+    button.Active = true
+    button.AutoButtonColor = false
+    button.ZIndex = 10
+    button.Parent = gui
+
+    buttonStates[button] = {
+        moved = false,
+        suppressClick = false
+    }
+
+    track(button.InputBegan:Connect(function(input)
+        if input.UserInputType ~= Enum.UserInputType.Touch
+            and input.UserInputType ~= Enum.UserInputType.MouseButton1 then
+            return
+        end
+
+        activeDrag = {
+            button = button,
+            input = input,
+            inputType = input.UserInputType,
+            startInput = input.Position,
+            startPosition = button.Position,
+            moved = false
+        }
+
+        buttonStates[button].moved = false
+    end))
+
+    return button
+end
+
+local function moveDraggedButton(input, isTouchMove)
+    local drag = activeDrag
+    if not drag then return end
+
+    if drag.inputType == Enum.UserInputType.MouseButton1 then
+        if input.UserInputType ~= Enum.UserInputType.MouseMovement then
+            return
+        end
+    elseif drag.inputType == Enum.UserInputType.Touch then
+        if not isTouchMove and input.UserInputType ~= Enum.UserInputType.Touch then
+            return
+        end
+    else
+        return
+    end
+
+    local delta = input.Position - drag.startInput
+
+    if delta.Magnitude >= 7 then
+        drag.moved = true
+        buttonStates[drag.button].moved = true
+    end
+
+    if not drag.moved then return end
+
+    local camera = workspace.CurrentCamera
+    if not camera then return end
+
+    local viewport = camera.ViewportSize
+    local button = drag.button
+    local start = drag.startPosition
+
+    local startX = start.X.Scale * viewport.X + start.X.Offset
+    local startY = start.Y.Scale * viewport.Y + start.Y.Offset
+
+    local x = math.clamp(
+        startX + delta.X, 0,
+        math.max(0, viewport.X - button.AbsoluteSize.X)
+    )
+
+    local y = math.clamp(
+        startY + delta.Y, 0,
+        math.max(0, viewport.Y - button.AbsoluteSize.Y)
+    )
+
+    button.Position = UDim2.fromOffset(x, y)
+end
+
+track(UserInputService.InputChanged:Connect(function(input)
+    moveDraggedButton(input, false)
+end))
+
+track(UserInputService.TouchMoved:Connect(function(input)
+    moveDraggedButton(input, true)
+end))
+
+track(UserInputService.InputEnded:Connect(function(input)
+    local drag = activeDrag
+    if not drag then return end
+
+    local ended = input == drag.input
+        or (
+            drag.inputType == Enum.UserInputType.MouseButton1
+            and input.UserInputType == Enum.UserInputType.MouseButton1
+        )
+
+    if not ended then return end
+
+    local button = drag.button
+    local state = buttonStates[button]
+
+    if state and drag.moved then
+        state.suppressClick = true
+        task.delay(0.25, function()
+            if buttonStates[button] == state then
+                state.suppressClick = false
+                state.moved = false
+            end
+        end)
+    elseif state then
+        state.moved = false
+    end
+
+    activeDrag = nil
+end))
+
+local function canActivate(button)
+    local state = buttonStates[button]
+    if not state then return true end
+
+    if state.suppressClick then
+        state.suppressClick = false
+        state.moved = false
+        return false
+    end
+
+    if state.moved then
+        state.moved = false
+        return false
+    end
+
+    return true
+end
+
+local menu = makeButton("ToggleESP", "ESP: ON", UDim2.new(1, -110, 0, 70))
+local infoButton = makeButton("ToggleInfo", "INFO: ON", UDim2.new(1, -110, 0, 108))
+local rayButton = makeButton("ToggleRayX", "RAY-X: OFF", UDim2.new(1, -110, 0, 146))
+local spectateButton = makeButton("ToggleSpectate", "SPECTATE", UDim2.new(1, -110, 0, 184))
+local playerButton = makeButton("TogglePlayerESP", "PLAYER ESP", UDim2.new(1, -110, 0, 222))
+
+local function makeText(parent, name, size, color)
+    local label = Instance.new("TextLabel")
+    label.Name = name
+    label.Size = size
+    label.BackgroundTransparency = 1
+    label.TextColor3 = color
+    label.TextStrokeTransparency = 0.25
+    label.TextSize = 12
+    label.Font = Enum.Font.GothamBold
+    label.Text = ""
+    label.Parent = parent
+    return label
+end
+
+local function makePanel(name, titleText, height)
+    local panel = Instance.new("Frame")
+    panel.Name = name
+    panel.Size = UDim2.fromOffset(230, height)
+    panel.Position = UDim2.new(0.5, -115, 0.5, -height / 2)
+    panel.BackgroundColor3 = DARK
+    panel.BackgroundTransparency = 0.08
+    panel.BorderColor3 = GREEN
+    panel.BorderSizePixel = 1
+    panel.Visible = false
+    panel.ZIndex = 20
+    panel.Parent = gui
+
+    local title = Instance.new("TextLabel")
+    title.Size = UDim2.new(1, -40, 0, 36)
+    title.Position = UDim2.fromOffset(8, 0)
+    title.BackgroundTransparency = 1
+    title.Text = titleText
+    title.TextColor3 = GREEN
+    title.TextSize = 13
+    title.Font = Enum.Font.GothamBold
+    title.TextXAlignment = Enum.TextXAlignment.Left
+    title.ZIndex = 21
+    title.Parent = panel
+
+    local close = Instance.new("TextButton")
+    close.Size = UDim2.fromOffset(30, 30)
+    close.Position = UDim2.new(1, -34, 0, 3)
+    close.BackgroundColor3 = Color3.fromRGB(35, 35, 40)
+    close.BorderColor3 = GREEN
+    close.Text = "X"
+    close.TextColor3 = RED
+    close.TextSize = 14
+    close.Font = Enum.Font.GothamBold
+    close.ZIndex = 22
+    close.Parent = panel
+
+    local list = Instance.new("ScrollingFrame")
+    list.Name = "PlayerList"
+    list.Position = UDim2.fromOffset(6, 40)
+    list.Size = UDim2.new(1, -12, 1, -46)
+    list.BackgroundColor3 = Color3.fromRGB(8, 8, 12)
+    list.BackgroundTransparency = 0.15
+    list.BorderSizePixel = 0
+    list.ScrollBarThickness = 4
+    list.ScrollBarImageColor3 = GREEN
+    list.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    list.CanvasSize = UDim2.new()
+    list.ZIndex = 21
+    list.Parent = panel
+
+    local layout = Instance.new("UIListLayout")
+    layout.Padding = UDim.new(0, 4)
+    layout.SortOrder = Enum.SortOrder.LayoutOrder
+    layout.Parent = list
+
+    local padding = Instance.new("UIPadding")
+    padding.PaddingTop = UDim.new(0, 4)
+    padding.PaddingBottom = UDim.new(0, 4)
+    padding.PaddingLeft = UDim.new(0, 4)
+    padding.PaddingRight = UDim.new(0, 4)
+    padding.Parent = list
+
+    close.Activated:Connect(function()
+        panel.Visible = false
+    end)
+
+    return panel, list
+end
+
+local spectatePanel, spectateList =
+    makePanel("SpectatePlayerSelector", "CHỌN CAMERA", 300)
+
+local espPanel, playerList =
+    makePanel("PlayerESPSelector", "CHỌN NGƯỜI ESP", 300)
+
+local function createESP(player)
+    if player == LP or espObjects[player] then return end
+    if selectedPlayers[player] == nil then
+        selectedPlayers[player] = true
+    end
+
+    local box = Instance.new("Frame")
+    box.Name = "ESPBox_" .. player.Name
+    box.BackgroundTransparency = 1
+    box.BorderSizePixel = 0
+    box.Visible = false
+    box.Parent = gui
+
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = GREEN
+    stroke.Thickness = 1
+    stroke.Parent = box
+
+    local line = Instance.new("Frame")
+    line.Name = "ESPLine"
+    line.AnchorPoint = Vector2.new(0.5, 0.5)
+    line.BackgroundColor3 = GREEN
+    line.BorderSizePixel = 0
+    line.Size = UDim2.fromOffset(1, 1)
+    line.Visible = false
+    line.Parent = gui
+
+    local info = Instance.new("Frame")
+    info.Name = "ESPInfo_" .. player.Name
+    info.BackgroundColor3 = Color3.fromRGB(10, 10, 10)
+    info.BackgroundTransparency = 0.2
+    info.BorderColor3 = GREEN
+    info.BorderSizePixel = 1
+    info.Size = UDim2.fromOffset(178, 76)
+    info.Visible = false
+    info.Parent = gui
+
+    local avatar = Instance.new("ImageLabel")
+    avatar.Name = "PlayerAvatar"
+    avatar.Size = UDim2.fromOffset(48, 48)
+    avatar.Position = UDim2.fromOffset(5, 5)
+    avatar.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+    avatar.BorderSizePixel = 0
+    avatar.ScaleType = Enum.ScaleType.Crop
+    avatar.Parent = info
+
+    local avatarStroke = Instance.new("UIStroke")
+    avatarStroke.Color = GREEN
+    avatarStroke.Thickness = 1
+    avatarStroke.Parent = avatar
+
+    local avatarCorner = Instance.new("UICorner")
+    avatarCorner.CornerRadius = UDim.new(0, 5)
+    avatarCorner.Parent = avatar
+
+    local displayName = makeText(info, "DisplayName", UDim2.new(1, -64, 0, 16), WHITE)
+    displayName.Position = UDim2.fromOffset(61, 3)
+    displayName.TextXAlignment = Enum.TextXAlignment.Left
+    displayName.TextTruncate = Enum.TextTruncate.AtEnd
+
+    local username = makeText(info, "Username", UDim2.new(1, -64, 0, 16), GREEN)
+    username.Position = UDim2.fromOffset(61, 19)
+    username.TextXAlignment = Enum.TextXAlignment.Left
+    username.TextTruncate = Enum.TextTruncate.AtEnd
+
+    local hp = makeText(info, "HP", UDim2.new(1, -64, 0, 16), GREEN)
+    hp.Position = UDim2.fromOffset(61, 35)
+    hp.TextXAlignment = Enum.TextXAlignment.Left
+
+    local distance = makeText(info, "Distance", UDim2.new(1, -10, 0, 16), WHITE)
+    distance.Position = UDim2.fromOffset(5, 57)
+    distance.TextXAlignment = Enum.TextXAlignment.Left
+
+    espObjects[player] = {
+        box = box,
+        line = line,
+        info = info,
+        avatar = avatar,
+        displayName = displayName,
+        username = username,
+        hp = hp,
+        distance = distance
+    }
+
+    task.spawn(function()
+        local success, image = pcall(function()
+            return Players:GetUserThumbnailAsync(
+                player.UserId,
+                Enum.ThumbnailType.HeadShot,
+                Enum.ThumbnailSize.Size150x150
+            )
+        end)
+
+        local data = espObjects[player]
+        if success and image and data then
+            data.avatar.Image = image
+        end
+    end)
+end
+
+local function hideESP(data)
+    data.box.Visible = false
+    data.line.Visible = false
+    data.info.Visible = false
+end
+
+local function removeESP(player)
+    local data = espObjects[player]
+    if data then
+        data.box:Destroy()
+        data.line:Destroy()
+        data.info:Destroy()
+        espObjects[player] = nil
+    end
+    selectedPlayers[player] = nil
+end
+
+local function refreshList(list, mode)
+    for _, child in ipairs(list:GetChildren()) do
+        if child:IsA("TextButton") or child.Name == "EmptyLabel" then
+            child:Destroy()
+        end
+    end
+
+    local order = 0
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LP then
+            order += 1
+
+            local isSelected = selectedPlayers[player] ~= false
+            local row = Instance.new("TextButton")
+            row.Name = "Player_" .. player.UserId
+            row.Size = UDim2.new(1, -4, 0, 34)
+            row.BackgroundColor3 = isSelected
+                and Color3.fromRGB(18, 42, 18)
+                or Color3.fromRGB(35, 20, 20)
+            row.BorderColor3 = isSelected and GREEN or RED
+            row.TextColor3 = isSelected and GREEN or WHITE
+            row.BorderSizePixel = 1
+            row.TextSize = 11
+            row.Font = Enum.Font.GothamBold
+            row.TextTruncate = Enum.TextTruncate.AtEnd
+            row.LayoutOrder = order
+            row.ZIndex = 22
+            row.Parent = list
+
+            if mode == "ESP" then
+                row.Text = (isSelected and "[ON] " or "[OFF] ")
+                    .. player.DisplayName .. " @" .. player.Name
+
+                row.Activated:Connect(function()
+                    selectedPlayers[player] = not (selectedPlayers[player] ~= false)
+                    refreshList(list, "ESP")
+                end)
+            else
+                row.Text = (spectateTarget == player and "[ĐANG XEM] " or "")
+                    .. player.DisplayName .. " @" .. player.Name
+
+                row.Activated:Connect(function()
+                    local character = player.Character
+                    local humanoid = character
+                        and character:FindFirstChildOfClass("Humanoid")
+
+                    if not humanoid or humanoid.Health <= 0 then
+                        row.Text = "Người chơi chưa sẵn sàng"
+                        return
+                    end
+
+                    if not spectateEnabled then
+                        local ownCharacter = LP.Character
+                        local ownHumanoid = ownCharacter
+                            and ownCharacter:FindFirstChildOfClass("Humanoid")
+                        local ownRoot = ownCharacter
+                            and ownCharacter:FindFirstChild("HumanoidRootPart")
+
+                        if not ownHumanoid or not ownRoot then
+                            return
+                        end
+
+                        lockedCharacter = ownCharacter
+                        lockedState = {
+                            WalkSpeed = ownHumanoid.WalkSpeed,
+                            JumpPower = ownHumanoid.JumpPower,
+                            JumpHeight = ownHumanoid.JumpHeight,
+                            AutoRotate = ownHumanoid.AutoRotate,
+                            Anchored = ownRoot.Anchored
+                        }
+
+                        ownHumanoid.WalkSpeed = 0
+                        ownHumanoid.JumpPower = 0
+                        ownHumanoid.JumpHeight = 0
+                        ownHumanoid.AutoRotate = false
+                        ownRoot.Anchored = true
+                    end
+
+                    spectateEnabled = true
+                    spectateTarget = player
+
+                    local camera = workspace.CurrentCamera
+                    if camera then
+                        camera.CameraSubject = humanoid
+                    end
+
+                    setButtonState(spectateButton, "SPECTATE: ON", true)
+                    refreshList(list, "SPECTATE")
+                end)
+            end
+        end
+    end
+
+    if order == 0 then
+        local empty = Instance.new("TextLabel")
+        empty.Name = "EmptyLabel"
+        empty.Size = UDim2.new(1, -4, 0, 36)
+        empty.BackgroundTransparency = 1
+        empty.Text = "Không có người chơi khác"
+        empty.TextColor3 = WHITE
+        empty.TextSize = 11
+        empty.Font = Enum.Font.Gotham
+        empty.ZIndex = 22
+        empty.Parent = list
+    end
+end
+
+refreshPlayerList = function()
+    refreshList(playerList, "ESP")
+end
+
+refreshSpectateList = function()
+    refreshList(spectateList, "SPECTATE")
+end
+
+local function restoreCharacter()
+    if lockedCharacter and lockedCharacter.Parent and lockedState then
+        local humanoid = lockedCharacter:FindFirstChildOfClass("Humanoid")
+        local root = lockedCharacter:FindFirstChild("HumanoidRootPart")
+
+        if humanoid then
+            pcall(function()
+                humanoid.WalkSpeed = lockedState.WalkSpeed
+                humanoid.JumpPower = lockedState.JumpPower
+                humanoid.JumpHeight = lockedState.JumpHeight
+                humanoid.AutoRotate = lockedState.AutoRotate
+            end)
+        end
+
+        if root then
+            pcall(function()
+                root.Anchored = lockedState.Anchored
+            end)
+        end
+    end
+
+    lockedCharacter = nil
+    lockedState = nil
+end
+
+local function stopSpectate()
+    spectateEnabled = false
+    spectateTarget = nil
+
+    local camera = workspace.CurrentCamera
+    local character = LP.Character
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+
+    if camera and humanoid then
+        camera.CameraSubject = humanoid
+    end
+
+    restoreCharacter()
+    setButtonState(spectateButton, "SPECTATE", false)
+    refreshSpectateList()
+end
+
+local function isCharacterPart(part)
+    local ancestor = part.Parent
+
+    while ancestor and ancestor ~= workspace do
+        if ancestor:IsA("Model") then
+            for _, player in ipairs(Players:GetPlayers()) do
+                if player.Character == ancestor then
+                    return true
+                end
+            end
+        end
+        ancestor = ancestor.Parent
+    end
+
+    return false
+end
+
+local function applyRayX(part)
+    if not rayXEnabled or not part:IsA("BasePart") then return end
+    if isCharacterPart(part) then return end
+
+    if rayOriginal[part] == nil then
+        rayOriginal[part] = part.LocalTransparencyModifier
+    end
+
+    pcall(function()
+        part.LocalTransparencyModifier = 0.8
+    end)
+end
+
+local function disableRayX()
+    rayXEnabled = false
+
+    for part, originalValue in pairs(rayOriginal) do
+        if part and part.Parent then
+            pcall(function()
+                part.LocalTransparencyModifier = originalValue
+            end)
+        end
+    end
+
+    table.clear(rayOriginal)
+    setButtonState(rayButton, "RAY-X: OFF", false)
+end
+
+local function enableRayX()
+    rayXEnabled = true
+
+    for _, object in ipairs(workspace:GetDescendants()) do
+        if object:IsA("BasePart") then
+            applyRayX(object)
+        end
+    end
+
+    setButtonState(rayButton, "RAY-X: ON", true)
+end
+
+track(workspace.DescendantAdded:Connect(function(object)
+    if rayXEnabled and object:IsA("BasePart") then
+        task.defer(function()
+            if object.Parent then
+                applyRayX(object)
+            end
+        end)
+    end
+end))
+
+track(menu.Activated:Connect(function()
+    if not canActivate(menu) then return end
+
+    enabled = not enabled
+    setButtonState(menu, enabled and "ESP: ON" or "ESP: OFF", enabled)
+
+    if not enabled then
+        for _, data in pairs(espObjects) do
+            hideESP(data)
+        end
+    end
+end))
+
+track(infoButton.Activated:Connect(function()
+    if not canActivate(infoButton) then return end
+
+    infoEnabled = not infoEnabled
+    setButtonState(infoButton, infoEnabled and "INFO: ON" or "INFO: OFF", infoEnabled)
+
+    if not infoEnabled then
+        for _, data in pairs(espObjects) do
+            data.info.Visible = false
+        end
+    end
+end))
+
+track(rayButton.Activated:Connect(function()
+    if not canActivate(rayButton) then return end
+
+    if rayXEnabled then
+        disableRayX()
+    else
+        enableRayX()
+    end
+end))
+
+track(spectateButton.Activated:Connect(function()
+    if not canActivate(spectateButton) then return end
+
+    if spectateEnabled then
+        stopSpectate()
+    else
+        spectatePanel.Visible = not spectatePanel.Visible
+        if spectatePanel.Visible then
+            refreshSpectateList()
+        end
+    end
+end))
+
+track(playerButton.Activated:Connect(function()
+    if not canActivate(playerButton) then return end
+
+    espPanel.Visible = not espPanel.Visible
+    if espPanel.Visible then
+        refreshPlayerList()
+    end
+end))
+
+for _, player in ipairs(Players:GetPlayers()) do
+    createESP(player)
+end
+
+track(Players.PlayerAdded:Connect(function(player)
+    if player ~= LP then
+        selectedPlayers[player] = true
+        createESP(player)
+        if espPanel.Visible then refreshPlayerList() end
+        if spectatePanel.Visible then refreshSpectateList() end
+    end
+end))
+
+track(Players.PlayerRemoving:Connect(function(player)
+    removeESP(player)
+
+    if spectateEnabled and spectateTarget == player then
+        stopSpectate()
+    end
+
+    if espPanel.Visible then refreshPlayerList() end
+    if spectatePanel.Visible then refreshSpectateList() end
+end))
+
+track(LP.CharacterAdded:Connect(function()
+    task.wait(0.2)
+
+    if spectateEnabled then
+        local target = spectateTarget
+        local humanoid = target and target.Character
+            and target.Character:FindFirstChildOfClass("Humanoid")
+
+        if humanoid and humanoid.Health > 0 then
+            local character = LP.Character
+            local ownHumanoid = character and character:FindFirstChildOfClass("Humanoid")
+            local root = character and character:FindFirstChild("HumanoidRootPart")
+
+            if ownHumanoid and root then
+                lockedCharacter = character
+                lockedState = {
+                    WalkSpeed = ownHumanoid.WalkSpeed,
+                    JumpPower = ownHumanoid.JumpPower,
+                    JumpHeight = ownHumanoid.JumpHeight,
+                    AutoRotate = ownHumanoid.AutoRotate,
+                    Anchored = root.Anchored
+                }
+
+                ownHumanoid.WalkSpeed = 0
+                ownHumanoid.JumpPower = 0
+                ownHumanoid.JumpHeight = 0
+                ownHumanoid.AutoRotate = false
+                root.Anchored = true
+            end
+
+            if workspace.CurrentCamera then
+                workspace.CurrentCamera.CameraSubject = humanoid
+            end
+        else
+            stopSpectate()
+        end
+    else
+        local humanoid = LP.Character
+            and LP.Character:FindFirstChildOfClass("Humanoid")
+
+        if humanoid and workspace.CurrentCamera then
+            workspace.CurrentCamera.CameraSubject = humanoid
+        end
+    end
+end))
+
+RunService:BindToRenderStep(
+    RENDER_NAME,
+    Enum.RenderPriority.Camera.Value + 1,
+    function()
+        local camera = workspace.CurrentCamera
+        if not camera then return end
+
+        local viewport = camera.ViewportSize
+        local startPos = Vector2.new(viewport.X / 2, viewport.Y)
+
+        local myCharacter = LP.Character
+        local myRoot = myCharacter and myCharacter:FindFirstChild("HumanoidRootPart")
+
+        for player, data in pairs(espObjects) do
+            local character = player.Character
+            local root = character and character:FindFirstChild("HumanoidRootPart")
+            local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+
+            if not enabled or selectedPlayers[player] == false
+                or not root or not humanoid or humanoid.Health <= 0 then
+                hideESP(data)
+                continue
+            end
+
+            local center, onScreen = camera:WorldToViewportPoint(root.Position)
+
+            if not onScreen or center.Z <= 0
+                or center.X < 0 or center.X > viewport.X
+                or center.Y < 0 or center.Y > viewport.Y then
+                hideESP(data)
+                continue
+            end
+
+            local head = character:FindFirstChild("Head")
+            local topY, bottomY
+
+            if head then
+                topY = camera:WorldToViewportPoint(
+                    head.Position + Vector3.new(0, 0.5, 0)
+                ).Y
+
+                bottomY = camera:WorldToViewportPoint(
+                    root.Position - Vector3.new(0, 3, 0)
+                ).Y
+            else
+                local halfHeight = humanoid.HipHeight * 2 + 25
+                topY = center.Y - halfHeight
+                bottomY = center.Y + halfHeight
+            end
+
+            local boxHeight = math.max(20, bottomY - topY)
+            local boxWidth = boxHeight * 0.48
+            local boxX = center.X - boxWidth / 2
+            local boxY = topY
+
+            data.box.Position = UDim2.fromOffset(boxX, boxY)
+            data.box.Size = UDim2.fromOffset(boxWidth, boxHeight)
+            data.box.Visible = true
+
+            local target = Vector2.new(center.X, center.Y)
+            local delta = target - startPos
+            local length = delta.Magnitude
+
+            if length > 1 then
+                data.line.Position = UDim2.fromOffset(
+                    (startPos.X + target.X) / 2,
+                    (startPos.Y + target.Y) / 2
+                )
+                data.line.Size = UDim2.fromOffset(1, length)
+                data.line.Rotation = math.deg(math.atan2(delta.Y, delta.X)) - 90
+                data.line.Visible = true
+            else
+                data.line.Visible = false
+            end
+
+            if infoEnabled then
+                local infoWidth = 178
+                local infoHeight = 76
+                local infoX = boxX + boxWidth + 4
+
+                if infoX + infoWidth > viewport.X then
+                    infoX = boxX - infoWidth - 4
+                end
+
+                infoX = math.clamp(infoX, 0, math.max(0, viewport.X - infoWidth))
+                local infoY = math.clamp(boxY, 0, math.max(0, viewport.Y - infoHeight))
+
+                data.info.Position = UDim2.fromOffset(infoX, infoY)
+                data.info.Visible = true
+                data.displayName.Text = player.DisplayName
+                data.username.Text = "@" .. player.Name
+
+                local currentHP = math.floor(humanoid.Health + 0.5)
+                local maxHP = math.floor(humanoid.MaxHealth + 0.5)
+                data.hp.Text = "HP: " .. currentHP .. "/" .. maxHP
+                data.hp.TextColor3 = humanoid.Health <= humanoid.MaxHealth * 0.25
+                    and RED or GREEN
+
+                local dist = 0
+                if myRoot then
+                    dist = math.floor((myRoot.Position - root.Position).Magnitude + 0.5)
+                end
+
+                data.distance.Text = "DIST: " .. dist .. " studs"
+            else
+                data.info.Visible = false
+            end
+        end
+
+        if spectateEnabled then
+            local target = spectateTarget
+            local humanoid = target and target.Character
+                and target.Character:FindFirstChildOfClass("Humanoid")
+
+            if not target or not target.Parent or not humanoid or humanoid.Health <= 0 then
+                stopSpectate()
+            else
+                if workspace.CurrentCamera
+                    and workspace.CurrentCamera.CameraSubject ~= humanoid then
+                    workspace.CurrentCamera.CameraSubject = humanoid
+                end
+            end
+        end
+    end
+)
+
+local function cleanup()
+    pcall(function()
+        RunService:UnbindFromRenderStep(RENDER_NAME)
+    end)
+
+    if rayXEnabled then
+        disableRayX()
+    end
+
+    if spectateEnabled then
+        stopSpectate()
+    else
+        restoreCharacter()
+    end
+
+    for _, connection in ipairs(connections) do
+        pcall(function()
+            connection:Disconnect()
+        end)
+    end
+
+    if gui then gui:Destroy() end
+end
+
+if script then
+    pcall(function()
+        script.Destroying:Connect(cleanup)
+    end)
+end
