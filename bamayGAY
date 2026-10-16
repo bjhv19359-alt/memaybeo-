@@ -13,20 +13,25 @@ local DARK = Color3.fromRGB(15, 15, 20)
 local GUI_NAME = "MobileESP_Type1"
 local RENDER_NAME = "MobileESP_Type1_Render"
 
-local enabled = true
-local infoEnabled = true
+local enabled = false
+local infoEnabled = false
 local rayXEnabled = false
 local spectateEnabled = false
 local spectateTarget = nil
+local expanded = false
 
 local espObjects = {}
 local connections = {}
-local buttonStates = {}
 local selectedPlayers = {}
 local rayOriginal = {}
-local activeDrag = nil
 local lockedCharacter = nil
 local lockedState = nil
+
+local activePress = nil
+local longPressToken = 0
+local suppressNextClick = false
+local HOLD_TIME = 0.45
+local MOVE_THRESHOLD = 8
 
 pcall(function()
     RunService:UnbindFromRenderStep(RENDER_NAME)
@@ -59,159 +64,89 @@ local function setButtonState(button, text, isOn)
     button.BorderColor3 = isOn and GREEN or RED
 end
 
-local function makeButton(name, text, position)
+local function makeButton(name, text, position, size)
     local button = Instance.new("TextButton")
     button.Name = name
-    button.Size = UDim2.fromOffset(100, 34)
+    button.Size = size or UDim2.fromOffset(100, 34)
     button.Position = position
     button.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
     button.BackgroundTransparency = 0.15
     button.BorderColor3 = GREEN
     button.BorderSizePixel = 1
-    button.TextColor3 = GREEN
+    button.TextColor3 = RED
     button.TextSize = 12
     button.Font = Enum.Font.GothamBold
     button.Text = text
     button.Active = true
     button.AutoButtonColor = false
+    button.Visible = false
     button.ZIndex = 10
     button.Parent = gui
-
-    buttonStates[button] = {
-        moved = false,
-        suppressClick = false
-    }
-
-    track(button.InputBegan:Connect(function(input)
-        if input.UserInputType ~= Enum.UserInputType.Touch
-            and input.UserInputType ~= Enum.UserInputType.MouseButton1 then
-            return
-        end
-
-        activeDrag = {
-            button = button,
-            input = input,
-            inputType = input.UserInputType,
-            startInput = input.Position,
-            startPosition = button.Position,
-            moved = false
-        }
-
-        buttonStates[button].moved = false
-    end))
-
     return button
 end
 
-local function moveDraggedButton(input, isTouchMove)
-    local drag = activeDrag
-    if not drag then return end
+local espButton = makeButton(
+    "ToggleESP",
+    "ESP: OFF",
+    UDim2.new(1, -110, 0, 70)
+)
 
-    if drag.inputType == Enum.UserInputType.MouseButton1 then
-        if input.UserInputType ~= Enum.UserInputType.MouseMovement then
-            return
-        end
-    elseif drag.inputType == Enum.UserInputType.Touch then
-        if not isTouchMove and input.UserInputType ~= Enum.UserInputType.Touch then
-            return
-        end
-    else
-        return
-    end
+local infoButton = makeButton(
+    "ToggleInfo",
+    "INFO: OFF",
+    UDim2.new(1, -110, 0, 108)
+)
 
-    local delta = input.Position - drag.startInput
+local rayButton = makeButton(
+    "ToggleRayX",
+    "RAY-X: OFF",
+    UDim2.new(1, -110, 0, 146)
+)
 
-    if delta.Magnitude >= 7 then
-        drag.moved = true
-        buttonStates[drag.button].moved = true
-    end
+local spectateButton = makeButton(
+    "ToggleSpectate",
+    "SPECTATE",
+    UDim2.new(1, -110, 0, 184)
+)
 
-    if not drag.moved then return end
+local playerButton = makeButton(
+    "TogglePlayerESP",
+    "PLAYER ESP",
+    UDim2.new(1, -110, 0, 222)
+)
 
-    local camera = workspace.CurrentCamera
-    if not camera then return end
+local closeButton = makeButton(
+    "CloseMenu",
+    "X",
+    UDim2.new(1, -110, 0, 260),
+    UDim2.fromOffset(100, 30)
+)
 
-    local viewport = camera.ViewportSize
-    local button = drag.button
-    local start = drag.startPosition
+espButton.Visible = true
 
-    local startX = start.X.Scale * viewport.X + start.X.Offset
-    local startY = start.Y.Scale * viewport.Y + start.Y.Offset
+setButtonState(espButton, "ESP: OFF", false)
+setButtonState(infoButton, "INFO: OFF", false)
+setButtonState(rayButton, "RAY-X: OFF", false)
+setButtonState(spectateButton, "SPECTATE", false)
+setButtonState(playerButton, "PLAYER ESP", false)
 
-    local x = math.clamp(
-        startX + delta.X, 0,
-        math.max(0, viewport.X - button.AbsoluteSize.X)
-    )
+local groupButtons = {
+    espButton,
+    infoButton,
+    rayButton,
+    spectateButton,
+    playerButton,
+    closeButton
+}
 
-    local y = math.clamp(
-        startY + delta.Y, 0,
-        math.max(0, viewport.Y - button.AbsoluteSize.Y)
-    )
-
-    button.Position = UDim2.fromOffset(x, y)
+local function updateMenu()
+    espButton.Visible = true
+    infoButton.Visible = expanded
+    rayButton.Visible = expanded
+    spectateButton.Visible = expanded
+    playerButton.Visible = expanded
+    closeButton.Visible = expanded
 end
-
-track(UserInputService.InputChanged:Connect(function(input)
-    moveDraggedButton(input, false)
-end))
-
-track(UserInputService.TouchMoved:Connect(function(input)
-    moveDraggedButton(input, true)
-end))
-
-track(UserInputService.InputEnded:Connect(function(input)
-    local drag = activeDrag
-    if not drag then return end
-
-    local ended = input == drag.input
-        or (
-            drag.inputType == Enum.UserInputType.MouseButton1
-            and input.UserInputType == Enum.UserInputType.MouseButton1
-        )
-
-    if not ended then return end
-
-    local button = drag.button
-    local state = buttonStates[button]
-
-    if state and drag.moved then
-        state.suppressClick = true
-        task.delay(0.25, function()
-            if buttonStates[button] == state then
-                state.suppressClick = false
-                state.moved = false
-            end
-        end)
-    elseif state then
-        state.moved = false
-    end
-
-    activeDrag = nil
-end))
-
-local function canActivate(button)
-    local state = buttonStates[button]
-    if not state then return true end
-
-    if state.suppressClick then
-        state.suppressClick = false
-        state.moved = false
-        return false
-    end
-
-    if state.moved then
-        state.moved = false
-        return false
-    end
-
-    return true
-end
-
-local menu = makeButton("ToggleESP", "ESP: ON", UDim2.new(1, -110, 0, 70))
-local infoButton = makeButton("ToggleInfo", "INFO: ON", UDim2.new(1, -110, 0, 108))
-local rayButton = makeButton("ToggleRayX", "RAY-X: OFF", UDim2.new(1, -110, 0, 146))
-local spectateButton = makeButton("ToggleSpectate", "SPECTATE", UDim2.new(1, -110, 0, 184))
-local playerButton = makeButton("TogglePlayerESP", "PLAYER ESP", UDim2.new(1, -110, 0, 222))
 
 local function makeText(parent, name, size, color)
     local label = Instance.new("TextLabel")
@@ -298,13 +233,14 @@ local function makePanel(name, titleText, height)
 end
 
 local spectatePanel, spectateList =
-    makePanel("SpectatePlayerSelector", "CHỌN CAMERA", 300)
+    makePanel("SpectatePlayerSelector", "CHOOSE CAMERA", 300)
 
 local espPanel, playerList =
-    makePanel("PlayerESPSelector", "CHỌN NGƯỜI ESP", 300)
+    makePanel("PlayerESPSelector", "CHOOSE ESP PLAYERS", 300)
 
 local function createESP(player)
     if player == LP or espObjects[player] then return end
+
     if selectedPlayers[player] == nil then
         selectedPlayers[player] = true
     end
@@ -358,21 +294,29 @@ local function createESP(player)
     avatarCorner.CornerRadius = UDim.new(0, 5)
     avatarCorner.Parent = avatar
 
-    local displayName = makeText(info, "DisplayName", UDim2.new(1, -64, 0, 16), WHITE)
+    local displayName = makeText(
+        info, "DisplayName", UDim2.new(1, -64, 0, 16), WHITE
+    )
     displayName.Position = UDim2.fromOffset(61, 3)
     displayName.TextXAlignment = Enum.TextXAlignment.Left
     displayName.TextTruncate = Enum.TextTruncate.AtEnd
 
-    local username = makeText(info, "Username", UDim2.new(1, -64, 0, 16), GREEN)
+    local username = makeText(
+        info, "Username", UDim2.new(1, -64, 0, 16), GREEN
+    )
     username.Position = UDim2.fromOffset(61, 19)
     username.TextXAlignment = Enum.TextXAlignment.Left
     username.TextTruncate = Enum.TextTruncate.AtEnd
 
-    local hp = makeText(info, "HP", UDim2.new(1, -64, 0, 16), GREEN)
+    local hp = makeText(
+        info, "HP", UDim2.new(1, -64, 0, 16), GREEN
+    )
     hp.Position = UDim2.fromOffset(61, 35)
     hp.TextXAlignment = Enum.TextXAlignment.Left
 
-    local distance = makeText(info, "Distance", UDim2.new(1, -10, 0, 16), WHITE)
+    local distance = makeText(
+        info, "Distance", UDim2.new(1, -10, 0, 16), WHITE
+    )
     distance.Position = UDim2.fromOffset(5, 57)
     distance.TextXAlignment = Enum.TextXAlignment.Left
 
@@ -432,8 +376,8 @@ local function refreshList(list, mode)
     for _, player in ipairs(Players:GetPlayers()) do
         if player ~= LP then
             order += 1
-
             local isSelected = selectedPlayers[player] ~= false
+
             local row = Instance.new("TextButton")
             row.Name = "Player_" .. player.UserId
             row.Size = UDim2.new(1, -4, 0, 34)
@@ -455,11 +399,12 @@ local function refreshList(list, mode)
                     .. player.DisplayName .. " @" .. player.Name
 
                 row.Activated:Connect(function()
-                    selectedPlayers[player] = not (selectedPlayers[player] ~= false)
+                    selectedPlayers[player] =
+                        not (selectedPlayers[player] ~= false)
                     refreshList(list, "ESP")
                 end)
             else
-                row.Text = (spectateTarget == player and "[ĐANG XEM] " or "")
+                row.Text = (spectateTarget == player and "[WATCHING] " or "")
                     .. player.DisplayName .. " @" .. player.Name
 
                 row.Activated:Connect(function()
@@ -468,7 +413,6 @@ local function refreshList(list, mode)
                         and character:FindFirstChildOfClass("Humanoid")
 
                     if not humanoid or humanoid.Health <= 0 then
-                        row.Text = "Người chơi chưa sẵn sàng"
                         return
                     end
 
@@ -479,9 +423,7 @@ local function refreshList(list, mode)
                         local ownRoot = ownCharacter
                             and ownCharacter:FindFirstChild("HumanoidRootPart")
 
-                        if not ownHumanoid or not ownRoot then
-                            return
-                        end
+                        if not ownHumanoid or not ownRoot then return end
 
                         lockedCharacter = ownCharacter
                         lockedState = {
@@ -502,9 +444,8 @@ local function refreshList(list, mode)
                     spectateEnabled = true
                     spectateTarget = player
 
-                    local camera = workspace.CurrentCamera
-                    if camera then
-                        camera.CameraSubject = humanoid
+                    if workspace.CurrentCamera then
+                        workspace.CurrentCamera.CameraSubject = humanoid
                     end
 
                     setButtonState(spectateButton, "SPECTATE: ON", true)
@@ -519,7 +460,7 @@ local function refreshList(list, mode)
         empty.Name = "EmptyLabel"
         empty.Size = UDim2.new(1, -4, 0, 36)
         empty.BackgroundTransparency = 1
-        empty.Text = "Không có người chơi khác"
+        empty.Text = "No other players"
         empty.TextColor3 = WHITE
         empty.TextSize = 11
         empty.Font = Enum.Font.Gotham
@@ -528,11 +469,11 @@ local function refreshList(list, mode)
     end
 end
 
-refreshPlayerList = function()
+local function refreshPlayerList()
     refreshList(playerList, "ESP")
 end
 
-refreshSpectateList = function()
+local function refreshSpectateList()
     refreshList(spectateList, "SPECTATE")
 end
 
@@ -645,11 +586,18 @@ track(workspace.DescendantAdded:Connect(function(object)
     end
 end))
 
-track(menu.Activated:Connect(function()
-    if not canActivate(menu) then return end
+track(espButton.Activated:Connect(function()
+    if suppressNextClick then
+        suppressNextClick = false
+        return
+    end
 
     enabled = not enabled
-    setButtonState(menu, enabled and "ESP: ON" or "ESP: OFF", enabled)
+    setButtonState(
+        espButton,
+        enabled and "ESP: ON" or "ESP: OFF",
+        enabled
+    )
 
     if not enabled then
         for _, data in pairs(espObjects) do
@@ -659,10 +607,12 @@ track(menu.Activated:Connect(function()
 end))
 
 track(infoButton.Activated:Connect(function()
-    if not canActivate(infoButton) then return end
-
     infoEnabled = not infoEnabled
-    setButtonState(infoButton, infoEnabled and "INFO: ON" or "INFO: OFF", infoEnabled)
+    setButtonState(
+        infoButton,
+        infoEnabled and "INFO: ON" or "INFO: OFF",
+        infoEnabled
+    )
 
     if not infoEnabled then
         for _, data in pairs(espObjects) do
@@ -672,8 +622,6 @@ track(infoButton.Activated:Connect(function()
 end))
 
 track(rayButton.Activated:Connect(function()
-    if not canActivate(rayButton) then return end
-
     if rayXEnabled then
         disableRayX()
     else
@@ -682,237 +630,311 @@ track(rayButton.Activated:Connect(function()
 end))
 
 track(spectateButton.Activated:Connect(function()
-    if not canActivate(spectateButton) then return end
-
     if spectateEnabled then
         stopSpectate()
     else
+        refreshSpectateList()
         spectatePanel.Visible = not spectatePanel.Visible
-        if spectatePanel.Visible then
-            refreshSpectateList()
-        end
     end
 end))
 
 track(playerButton.Activated:Connect(function()
-    if not canActivate(playerButton) then return end
-
+    refreshPlayerList()
     espPanel.Visible = not espPanel.Visible
-    if espPanel.Visible then
-        refreshPlayerList()
+end))
+
+track(closeButton.Activated:Connect(function()
+    expanded = false
+    updateMenu()
+end))
+
+local function getInputPosition(input)
+    return Vector2.new(input.Position.X, input.Position.Y)
+end
+
+local function getViewport()
+    local camera = workspace.CurrentCamera
+    return camera and camera.ViewportSize or Vector2.new(800, 600)
+end
+
+local function beginESPPress(input)
+    if input.UserInputType ~= Enum.UserInputType.Touch
+        and input.UserInputType ~= Enum.UserInputType.MouseButton1 then
+        return
+    end
+
+    longPressToken += 1
+
+    local press = {
+        input = input,
+        isTouch = input.UserInputType == Enum.UserInputType.Touch,
+        start = getInputPosition(input),
+        moved = false,
+        longPressed = false,
+        positions = {}
+    }
+
+    for _, button in ipairs(groupButtons) do
+        local p = button.AbsolutePosition
+        press.positions[button] = Vector2.new(p.X, p.Y)
+    end
+
+    activePress = press
+    suppressNextClick = false
+
+    local token = longPressToken
+
+    task.delay(HOLD_TIME, function()
+        if token ~= longPressToken or activePress ~= press then
+            return
+        end
+
+        if not press.moved then
+            press.longPressed = true
+            suppressNextClick = true
+            expanded = true
+            updateMenu()
+        end
+    end)
+end
+
+local function moveButtonGroup(press, delta)
+    local viewport = getViewport()
+    local minX, minY = math.huge, math.huge
+    local maxX, maxY = -math.huge, -math.huge
+
+    for _, button in ipairs(groupButtons) do
+        local p = press.positions[button]
+        if p then
+            minX = math.min(minX, p.X)
+            minY = math.min(minY, p.Y)
+            maxX = math.max(maxX, p.X + button.AbsoluteSize.X)
+            maxY = math.max(maxY, p.Y + button.AbsoluteSize.Y)
+        end
+    end
+
+    local lowX = -minX
+    local lowY = -minY
+    local highX = viewport.X - maxX
+    local highY = viewport.Y - maxY
+
+    delta = Vector2.new(
+                math.clamp(delta.X, lowX, highX),
+        math.clamp(delta.Y, lowY, highY)
+    )
+
+    for _, button in ipairs(groupButtons) do
+        local p = press.positions[button]
+        if p then
+            button.Position = UDim2.fromOffset(
+                p.X + delta.X,
+                p.Y + delta.Y
+            )
+        end
+    end
+end
+
+track(espButton.InputBegan:Connect(function(input)
+    beginESPPress(input)
+end))
+
+track(UserInputService.InputChanged:Connect(function(input)
+    local press = activePress
+    if not press then return end
+
+    if press.isTouch then
+        if input.UserInputType ~= Enum.UserInputType.Touch then
+            return
+        end
+    elseif input.UserInputType ~= Enum.UserInputType.MouseMovement then
+        return
+    end
+
+    local currentPosition = getInputPosition(input)
+    local delta = currentPosition - press.start
+
+    if delta.Magnitude > MOVE_THRESHOLD then
+        if not press.moved then
+            press.moved = true
+            longPressToken += 1
+        end
+
+        moveButtonGroup(press, delta)
     end
 end))
 
-for _, player in ipairs(Players:GetPlayers()) do
-    createESP(player)
+track(UserInputService.InputEnded:Connect(function(input)
+    local press = activePress
+    if not press then return end
+
+    if input == press.input
+        or (press.isTouch and input.UserInputType == Enum.UserInputType.Touch)
+        or (not press.isTouch and input.UserInputType == Enum.UserInputType.MouseButton1) then
+
+        activePress = nil
+        longPressToken += 1
+
+        if press.moved or press.longPressed then
+            suppressNextClick = true
+
+            task.delay(0.35, function()
+                suppressNextClick = false
+            end)
+        end
+    end
+end))
+
+local function updateESP()
+    for player, data in pairs(espObjects) do
+        if not player.Parent then
+            removeESP(player)
+            continue
+        end
+
+        if not enabled or selectedPlayers[player] == false then
+            hideESP(data)
+            continue
+        end
+
+        local character = player.Character
+        local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+        local root = character and character:FindFirstChild("HumanoidRootPart")
+
+        if not character or not humanoid or not root or humanoid.Health <= 0 then
+            hideESP(data)
+            continue
+        end
+
+        local camera = workspace.CurrentCamera
+        if not camera then
+            hideESP(data)
+            continue
+        end
+
+        local screenPosition, onScreen = camera:WorldToViewportPoint(root.Position)
+
+        if not onScreen or screenPosition.Z <= 0 then
+            hideESP(data)
+            continue
+        end
+
+        local head = character:FindFirstChild("Head")
+        local topPosition = head
+            and camera:WorldToViewportPoint(head.Position + Vector3.new(0, 0.5, 0))
+            or camera:WorldToViewportPoint(root.Position + Vector3.new(0, 3, 0))
+
+        local bottomPosition = camera:WorldToViewportPoint(
+            root.Position - Vector3.new(0, 3, 0)
+        )
+
+        local boxHeight = math.abs(bottomPosition.Y - topPosition.Y)
+        local boxWidth = boxHeight * 0.55
+
+        data.box.Position = UDim2.fromOffset(
+            screenPosition.X - boxWidth / 2,
+            topPosition.Y
+        )
+        data.box.Size = UDim2.fromOffset(boxWidth, boxHeight)
+        data.box.Visible = true
+
+        local lineStart = Vector2.new(camera.ViewportSize.X / 2, camera.ViewportSize.Y)
+        local lineEnd = Vector2.new(screenPosition.X, screenPosition.Y)
+
+        local difference = lineEnd - lineStart
+        local length = difference.Magnitude
+        local angle = math.deg(math.atan2(difference.Y, difference.X))
+
+        data.line.Position = UDim2.fromOffset(
+            (lineStart.X + lineEnd.X) / 2,
+            (lineStart.Y + lineEnd.Y) / 2
+        )
+        data.line.Size = UDim2.fromOffset(length, 1)
+        data.line.Rotation = angle
+        data.line.Visible = true
+
+        if infoEnabled then
+            data.info.Position = UDim2.fromOffset(
+                screenPosition.X + boxWidth / 2 + 5,
+                screenPosition.Y - 38
+            )
+            data.info.Visible = true
+
+            data.displayName.Text = player.DisplayName
+            data.username.Text = "@" .. player.Name
+            data.hp.Text = "HP: " .. math.floor(humanoid.Health)
+                .. "/" .. math.floor(humanoid.MaxHealth)
+
+            local ownCharacter = LP.Character
+            local ownRoot = ownCharacter
+                and ownCharacter:FindFirstChild("HumanoidRootPart")
+
+            if ownRoot then
+                local distance = (ownRoot.Position - root.Position).Magnitude
+                data.distance.Text = "DIST: " .. math.floor(distance) .. " studs"
+            else
+                data.distance.Text = "DIST: --"
+            end
+        else
+            data.info.Visible = false
+        end
+    end
 end
 
 track(Players.PlayerAdded:Connect(function(player)
-    if player ~= LP then
-        selectedPlayers[player] = true
-        createESP(player)
-        if espPanel.Visible then refreshPlayerList() end
-        if spectatePanel.Visible then refreshSpectateList() end
-    end
+    selectedPlayers[player] = true
+    createESP(player)
+    refreshPlayerList()
+    refreshSpectateList()
 end))
 
 track(Players.PlayerRemoving:Connect(function(player)
     removeESP(player)
 
-    if spectateEnabled and spectateTarget == player then
+    if spectateTarget == player then
         stopSpectate()
     end
 
-    if espPanel.Visible then refreshPlayerList() end
-    if spectatePanel.Visible then refreshSpectateList() end
+    refreshPlayerList()
+    refreshSpectateList()
 end))
 
-track(LP.CharacterAdded:Connect(function()
-    task.wait(0.2)
-
-    if spectateEnabled then
-        local target = spectateTarget
-        local humanoid = target and target.Character
-            and target.Character:FindFirstChildOfClass("Humanoid")
-
-        if humanoid and humanoid.Health > 0 then
-            local character = LP.Character
-            local ownHumanoid = character and character:FindFirstChildOfClass("Humanoid")
-            local root = character and character:FindFirstChild("HumanoidRootPart")
-
-            if ownHumanoid and root then
-                lockedCharacter = character
-                lockedState = {
-                    WalkSpeed = ownHumanoid.WalkSpeed,
-                    JumpPower = ownHumanoid.JumpPower,
-                    JumpHeight = ownHumanoid.JumpHeight,
-                    AutoRotate = ownHumanoid.AutoRotate,
-                    Anchored = root.Anchored
-                }
-
-                ownHumanoid.WalkSpeed = 0
-                ownHumanoid.JumpPower = 0
-                ownHumanoid.JumpHeight = 0
-                ownHumanoid.AutoRotate = false
-                root.Anchored = true
-            end
-
-            if workspace.CurrentCamera then
-                workspace.CurrentCamera.CameraSubject = humanoid
-            end
-        else
-            stopSpectate()
-        end
-    else
-        local humanoid = LP.Character
-            and LP.Character:FindFirstChildOfClass("Humanoid")
-
-        if humanoid and workspace.CurrentCamera then
-            workspace.CurrentCamera.CameraSubject = humanoid
-        end
+for _, player in ipairs(Players:GetPlayers()) do
+    if player ~= LP then
+        createESP(player)
     end
-end))
+end
+
+refreshPlayerList()
+refreshSpectateList()
+updateMenu()
 
 RunService:BindToRenderStep(
     RENDER_NAME,
     Enum.RenderPriority.Camera.Value + 1,
     function()
-        local camera = workspace.CurrentCamera
-        if not camera then return end
+        updateESP()
 
-        local viewport = camera.ViewportSize
-        local startPos = Vector2.new(viewport.X / 2, viewport.Y)
+        if spectateEnabled and spectateTarget then
+            local character = spectateTarget.Character
+            local humanoid = character
+                and character:FindFirstChildOfClass("Humanoid")
 
-        local myCharacter = LP.Character
-        local myRoot = myCharacter and myCharacter:FindFirstChild("HumanoidRootPart")
-
-        for player, data in pairs(espObjects) do
-            local character = player.Character
-            local root = character and character:FindFirstChild("HumanoidRootPart")
-            local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-
-            if not enabled or selectedPlayers[player] == false
-                or not root or not humanoid or humanoid.Health <= 0 then
-                hideESP(data)
-                continue
-            end
-
-            local center, onScreen = camera:WorldToViewportPoint(root.Position)
-
-            if not onScreen or center.Z <= 0
-                or center.X < 0 or center.X > viewport.X
-                or center.Y < 0 or center.Y > viewport.Y then
-                hideESP(data)
-                continue
-            end
-
-            local head = character:FindFirstChild("Head")
-            local topY, bottomY
-
-            if head then
-                topY = camera:WorldToViewportPoint(
-                    head.Position + Vector3.new(0, 0.5, 0)
-                ).Y
-
-                bottomY = camera:WorldToViewportPoint(
-                    root.Position - Vector3.new(0, 3, 0)
-                ).Y
-            else
-                local halfHeight = humanoid.HipHeight * 2 + 25
-                topY = center.Y - halfHeight
-                bottomY = center.Y + halfHeight
-            end
-
-            local boxHeight = math.max(20, bottomY - topY)
-            local boxWidth = boxHeight * 0.48
-            local boxX = center.X - boxWidth / 2
-            local boxY = topY
-
-            data.box.Position = UDim2.fromOffset(boxX, boxY)
-            data.box.Size = UDim2.fromOffset(boxWidth, boxHeight)
-            data.box.Visible = true
-
-            local target = Vector2.new(center.X, center.Y)
-            local delta = target - startPos
-            local length = delta.Magnitude
-
-            if length > 1 then
-                data.line.Position = UDim2.fromOffset(
-                    (startPos.X + target.X) / 2,
-                    (startPos.Y + target.Y) / 2
-                )
-                data.line.Size = UDim2.fromOffset(1, length)
-                data.line.Rotation = math.deg(math.atan2(delta.Y, delta.X)) - 90
-                data.line.Visible = true
-            else
-                data.line.Visible = false
-            end
-
-            if infoEnabled then
-                local infoWidth = 178
-                local infoHeight = 76
-                local infoX = boxX + boxWidth + 4
-
-                if infoX + infoWidth > viewport.X then
-                    infoX = boxX - infoWidth - 4
+            if humanoid and humanoid.Health > 0 then
+                local camera = workspace.CurrentCamera
+                if camera then
+                    camera.CameraSubject = humanoid
                 end
-
-                infoX = math.clamp(infoX, 0, math.max(0, viewport.X - infoWidth))
-                local infoY = math.clamp(boxY, 0, math.max(0, viewport.Y - infoHeight))
-
-                data.info.Position = UDim2.fromOffset(infoX, infoY)
-                data.info.Visible = true
-                data.displayName.Text = player.DisplayName
-                data.username.Text = "@" .. player.Name
-
-                local currentHP = math.floor(humanoid.Health + 0.5)
-                local maxHP = math.floor(humanoid.MaxHealth + 0.5)
-                data.hp.Text = "HP: " .. currentHP .. "/" .. maxHP
-                data.hp.TextColor3 = humanoid.Health <= humanoid.MaxHealth * 0.25
-                    and RED or GREEN
-
-                local dist = 0
-                if myRoot then
-                    dist = math.floor((myRoot.Position - root.Position).Magnitude + 0.5)
-                end
-
-                data.distance.Text = "DIST: " .. dist .. " studs"
             else
-                data.info.Visible = false
-            end
-        end
-
-        if spectateEnabled then
-            local target = spectateTarget
-            local humanoid = target and target.Character
-                and target.Character:FindFirstChildOfClass("Humanoid")
-
-            if not target or not target.Parent or not humanoid or humanoid.Health <= 0 then
                 stopSpectate()
-            else
-                if workspace.CurrentCamera
-                    and workspace.CurrentCamera.CameraSubject ~= humanoid then
-                    workspace.CurrentCamera.CameraSubject = humanoid
-                end
             end
         end
     end
 )
 
-local function cleanup()
+track(gui.Destroying:Connect(function()
     pcall(function()
         RunService:UnbindFromRenderStep(RENDER_NAME)
     end)
-
-    if rayXEnabled then
-        disableRayX()
-    end
-
-    if spectateEnabled then
-        stopSpectate()
-    else
-        restoreCharacter()
-    end
 
     for _, connection in ipairs(connections) do
         pcall(function()
@@ -920,11 +942,6 @@ local function cleanup()
         end)
     end
 
-    if gui then gui:Destroy() end
-end
-
-if script then
-    pcall(function()
-        script.Destroying:Connect(cleanup)
-    end)
-end
+    disableRayX()
+    restoreCharacter()
+end))
