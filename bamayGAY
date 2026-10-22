@@ -827,15 +827,28 @@ local function updateESP()
             root.Position - Vector3.new(0, 3, 0)
         )
 
-        local boxHeight = math.abs(bottomPosition.Y - topPosition.Y)
-        local boxWidth = boxHeight * 0.55
+        local ownCharacter = LP.Character
+local ownRoot = ownCharacter
+    and ownCharacter:FindFirstChild("HumanoidRootPart")
 
-        data.box.Position = UDim2.fromOffset(
-            screenPosition.X - boxWidth / 2,
-            topPosition.Y
-        )
-        data.box.Size = UDim2.fromOffset(boxWidth, boxHeight)
-        data.box.Visible = true
+local distance = ownRoot
+    and (ownRoot.Position - root.Position).Magnitude
+    or 50
+
+local scale = math.clamp(distance / 50, 0.85, 1.15)
+
+local distanceScale = math.clamp(screenPosition.Z / 30, 0.65, 1.15)
+
+local boxWidth = 15
+local boxHeight = 25
+
+data.box.Position = UDim2.fromOffset(
+    screenPosition.X - boxWidth / 2,
+    screenPosition.Y - boxHeight / 2
+)
+
+data.box.Size = UDim2.fromOffset(boxWidth, boxHeight)
+data.box.Visible = true
 
         local lineStart = Vector2.new(camera.ViewportSize.X / 2, camera.ViewportSize.Y)
         local lineEnd = Vector2.new(screenPosition.X, screenPosition.Y)
